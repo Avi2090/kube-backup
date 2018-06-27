@@ -3,7 +3,7 @@
 # kube-backup.sh
 # Various strategies to back-up the contents of containers running on a Kubernetes cluster.
 # Uses kubectl against the Kubernetes API. Can be use internal or external to a cluster.
-# Aaron Roydhouse <aaron@roydhouse.com>, 2017
+# Forked from: https://github.com/whereisaaron/kube-backup.git
 #
 # Sample usage:
 #   ./kube-backup.sh --task=backup-mysql-exec --selector=app=my-db,env=dev,component=mysql --container=mysql
@@ -41,7 +41,6 @@ Usage:
     [--dry-run]
   ${script_name} --help
   ${script_name} --version
-
 Notes:
   --secret defaults to 'kube-backup' and is the default secret for kubeconfig, aws, and slack
   --timestamp allows two backups to share the same timestamp
@@ -50,7 +49,6 @@ Notes:
   --backup-name will replace e.g. the database name or file path
   --dry-run will do everything except the actual backup
   --slack-pretext may include links using the Slack '<url|text>' syntax
-
 END
 }
 
@@ -450,10 +448,10 @@ backup_files_exec ()
     exit 1
   fi
 
-  check_for_s3_secret $AWS_SECRET
-  if [[ -n "$S3_BUCKET" ]]; then
-    check_for_aws_secret $AWS_SECRET
-  fi
+  #check_for_s3_secret $AWS_SECRET
+  #if [[ -n "$S3_BUCKET" ]]; then
+  #  check_for_aws_secret $AWS_SECRET
+  #fi
 
   if [[ -z "${FILES_PATH}" ]]; then
     echo "No backup path specified"
@@ -466,13 +464,13 @@ backup_files_exec ()
 
   local backup_path="${NAMESPACE-default}/${TIMESTAMP}"
   local backup_filename=$(create_filename "${POD}" "${CONTAINER}" "${BACKUP_NAME:-$FILES_PATH}" "${TIMESTAMP}" ".tar.gz")
-  if [[ -n "${S3_BUCKET}" ]]; then
-    [[ "$S3_PREFIX" =~ ^/*(.*[^/])/*$ ]] && local prefix=${BASH_REMATCH[1]}; prefix=${prefix}${prefix+/}
-    local target="s3://${S3_BUCKET}/${prefix}${backup_path}/${backup_filename}"
-    local use_s3="true"
+  if [[ -n "${GS_BUCKET}" ]]; then
+    [[ "$GS_PREFIX" =~ ^/*(.*[^/])/*$ ]] && local prefix=${BASH_REMATCH[1]}; prefix=${prefix}${prefix+/}
+    local target="gs://${GS_BUCKET}/${prefix}${backup_path}/${backup_filename}"
+    local use_gs="true"
   else
     local target="${backup_path}/${backup_filename}"
-    local use_s3="false"
+    local use_gs="false"
   fi
 
   #
@@ -480,12 +478,12 @@ backup_files_exec ()
   #
 
   local cmd="${KUBECTL} exec -i ${POD} --container=${CONTAINER} ${NS_ARG} --"
-  local backup_cmd="tar czf - '${FILES_PATH}'"
+  local backup_cmd="tar czfp - '${FILES_PATH}'"
   echo "Backing up files in '${FILES_PATH}' from container '${CONTAINER}' in pod '${POD}' to '${target}'"
   if [[ "${DRY_RUN}" != "true" ]]; then
-    if [[ "$use_s3" == "true" ]]; then
+    if [[ "$use_gs" == "true" ]]; then
       # relies on 'set -o pipefail' to detect kubectl errors
-      $cmd bash -c "${backup_cmd}" | ${AWSCLI} s3 cp - "${target}"
+      $cmd bash -c "${backup_cmd}" | ${GCPCLI} cp - "${target}"
     else
       mkdir -p "${backup_path}"
       $cmd bash -c "${backup_cmd}" > "${target}"
@@ -538,6 +536,14 @@ case $i in
   --s3-bucket=*)
   S3_BUCKET="${i#*=}"
   shift # past argument=value
+  ;;
+  --gs-bucket=*)
+  GS_BUCKET="${i#*=}"
+  shift
+  ;;
+  --gs-prefix=*)
+  GS_PREFIX="${i#*=}"
+  shift
   ;;
   --s3-prefix=*)
   S3_PREFIX="${i#*=}"
@@ -609,6 +615,7 @@ fi
 
 : ${KUBECTL:=kubectl}
 : ${AWSCLI:=aws}
+: ${GCPCLI:=gsutil}
 : ${ENVSUBST:=envsubst}
 : ${BASE64:=base64}
 check_tools $KUBECTL $AWSCLI $ENVSUBST $BASE64 sed basename
